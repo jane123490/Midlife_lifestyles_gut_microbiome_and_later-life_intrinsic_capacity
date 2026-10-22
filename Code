@@ -1,4 +1,4 @@
-#######Associations between midlife healthy lifestyles and later-life IC
+#######1.Associations between midlife healthy lifestyles and later-life IC
 linear_models <- function(outcomes, data, exposure = "lifestyle") {
   results <- lapply(outcomes, function(outcome) {
     formula <- as.formula(paste0(outcome, " ~ ", exposure,
@@ -19,3 +19,400 @@ linear_models <- function(outcomes, data, exposure = "lifestyle") {
 
 outcomes <- c("mmse_z","sppb_z", "handgrip_z", "sensory_z","gds_z", "ic_z")
 linear_lifestyle_ic <- linear_models(outcomes, life, exposure = "lifestyle")
+
+#########2.Simulation analysis of lifestyle interventions (IC)
+mu_ic <- mean(life$ic, na.rm = TRUE)
+sd_ic <- sd(life$ic, na.rm = TRUE)
+
+z_to_raw_ic <- function(z, mu, sd) {raw <- z * sd + mu
+return(raw)}
+
+##拟合无干预的模型
+fit <- lm(ic_z ~ smoke_e + alcohol_e + dash_e + activity_e + bmi_e +
+            age + interval + as.factor(sex70) + as.factor(edu) + comorbidity, data = life)
+summary(fit)
+
+life_base <- life
+life_base$pred_base_z <- predict(fit, newdata = life_base)
+life_base$pred_base_ic <- z_to_raw_ic(life_base$pred_base_z, mu_ic, sd_ic)
+
+mean_base_z  <- mean(life_base$pred_base_z, na.rm = TRUE)
+mean_base_ic <- mean(life_base$pred_base_ic, na.rm = TRUE)
+
+########查找prevalence位于最高10%并且平均IC位于整个人群平均数以下的生活方式聚集组合
+make_pattern_summary <- function(data,smoke = "smoke_e",alcohol = "alcohol_e",dash = "dash_e",activity = "activity_e",bmi = "bmi_e",
+                                 ic = "ic",ic_z = "ic_z") {
+  df <- data
+  vars_needed <- c(smoke, alcohol, dash, activity, bmi, ic, ic_z)
+  missing_vars <- vars_needed[!vars_needed %in% names(df)]
+  if (length(missing_vars) > 0) {stop(paste("以下变量在数据中不存在：", paste(missing_vars, collapse = ", ")))}
+  
+  df$pattern <- paste0(df[[smoke]],df[[alcohol]], df[[dash]], df[[activity]],df[[bmi]])
+  n_tab <- as.data.frame(table(df$pattern), stringsAsFactors = FALSE)
+  names(n_tab) <- c("pattern", "n")
+  n_tab$prevalence <- n_tab$n / sum(n_tab$n)
+  mean_ic_tab <- aggregate(df[[ic]], by = list(pattern = df$pattern), FUN = mean, na.rm = TRUE)
+  names(mean_ic_tab)[2] <- "mean_ic"
+  mean_icz_tab <- aggregate(df[[ic_z]], by = list(pattern = df$pattern), FUN = mean, na.rm = TRUE)
+  names(mean_icz_tab)[2] <- "mean_ic_z"
+  out <- merge(n_tab, mean_ic_tab, by = "pattern", all = TRUE)
+  out <- merge(out, mean_icz_tab, by = "pattern", all = TRUE)
+  
+  out$smoke_e    <- substr(out$pattern, 1, 1)
+  out$alcohol_e  <- substr(out$pattern, 2, 2)
+  out$dash_e     <- substr(out$pattern, 3, 3)
+  out$activity_e <- substr(out$pattern, 4, 4)
+  out$bmi_e      <- substr(out$pattern, 5, 5)
+  
+  out$smoke_e    <- as.numeric(out$smoke_e)
+  out$alcohol_e  <- as.numeric(out$alcohol_e)
+  out$dash_e     <- as.numeric(out$dash_e)
+  out$activity_e <- as.numeric(out$activity_e)
+  out$bmi_e      <- as.numeric(out$bmi_e)
+  
+  out <- out[order(-out$n), ]
+  rownames(out) <- NULL
+  out <- out[, c("pattern","smoke_e", "alcohol_e", "dash_e", "activity_e", "bmi_e","n", "prevalence", "mean_ic", "mean_ic_z")]
+  return(out) }
+
+pattern_summary <- make_pattern_summary(life)
+pattern_summary <- pattern_summary[order(-pattern_summary$prevalence,pattern_summary$mean_ic), ]
+pattern_summary[pattern_summary$prevalence>quantile(pattern_summary$prevalence, probs = 0.9) & pattern_summary$mean_ic<mean(life$ic), ]
+
+##模拟干预
+simulate_ic <- function(data, fit, mu_ic, sd_ic, vars_to_1 = NULL, scenario_name) {
+  newdata <- data
+  if (!is.null(vars_to_1)) {
+    for (v in vars_to_1) {newdata[[v]] <- 1 } }
+  
+  pred_z <- predict(fit, newdata = newdata)
+  pred_ic <- z_to_raw_ic(pred_z, mu_ic, sd_ic)
+  
+  mean_z  <- mean(pred_z, na.rm = TRUE)
+  mean_ic <- mean(pred_ic, na.rm = TRUE)
+  
+  delta_z  <- mean_z - mean_base_z
+  delta_ic <- mean_ic - mean_base_ic
+  
+  pct_change_ic <- (delta_ic / mean_base_ic) * 100
+  
+  out <- data.frame(scenario = scenario_name,
+                    mean_ic_z = mean_z,mean_ic_raw = mean_ic,delta_ic_z = delta_z,delta_ic_raw = delta_ic,pct_change_ic = pct_change_ic)
+  return(out)}
+
+res_base <- data.frame(scenario = "Base",mean_ic_z = mean_base_z,mean_ic_raw = mean_base_ic,delta_ic_z = 0,delta_ic_raw = 0,pct_change_ic = 0)
+res_smoke <- simulate_ic(data = life,fit = fit,mu_ic = mu_ic,sd_ic = sd_ic,vars_to_1 = c("smoke_e"),scenario_name = "Smoke")
+res_alcohol <- simulate_ic(data = life,fit = fit,mu_ic = mu_ic,sd_ic = sd_ic,vars_to_1 = c("alcohol_e"),scenario_name = "Alcohol")
+res_dash <- simulate_ic(data = life,fit = fit,mu_ic = mu_ic,sd_ic = sd_ic,vars_to_1 = c("dash_e"),scenario_name = "Diet")
+res_activity <- simulate_ic(data = life,fit = fit,mu_ic = mu_ic,sd_ic = sd_ic,vars_to_1 = c("activity_e"),scenario_name = "Activity")
+res_bmi <- simulate_ic(data = life,fit = fit,mu_ic = mu_ic,sd_ic = sd_ic,vars_to_1 = c("bmi_e"),scenario_name = "BMI")
+res_all <- simulate_ic(data = life,fit = fit,mu_ic = mu_ic,sd_ic = sd_ic,
+                       vars_to_1 = c("smoke_e", "alcohol_e", "dash_e", "activity_e", "bmi_e"),scenario_name = "All")
+res_com1 <- simulate_ic(data = life,fit = fit,mu_ic = mu_ic,sd_ic = sd_ic,
+                        vars_to_1 = c("alcohol_e", "dash_e", "activity_e", "bmi_e"),scenario_name = "alcohol_dash_activity_bmi")
+res_com2 <- simulate_ic(data = life,fit = fit,mu_ic = mu_ic,sd_ic = sd_ic,
+                        vars_to_1 = c("alcohol_e", "activity_e", "bmi_e"),scenario_name = "alcohol_activity_bmi")
+
+result_table <- rbind(res_base,res_smoke,res_alcohol,res_dash,res_activity,res_bmi,res_all,res_com1,res_com2)
+
+##bootstrap计算模拟干预的置信区间
+scenario_list <- list(
+  Smoke = c("smoke_e"),
+  Alcohol = c("alcohol_e"),
+  Diet = c("dash_e"),
+  Activity = c("activity_e"),
+  BMI = c("bmi_e"),
+  All = c("smoke_e", "alcohol_e", "dash_e", "activity_e", "bmi_e"),
+  alcohol_dash_activity_bmi = c("alcohol_e", "dash_e", "activity_e", "bmi_e"),
+  alcohol_activity_bmi = c("alcohol_e", "activity_e", "bmi_e"))
+
+#计算点估计的函数
+run_one_analysis <- function(data, mu_ic, sd_ic, scenario_list) {
+  fit <- lm(ic_z ~ smoke_e + alcohol_e + dash_e + activity_e + bmi_e +
+              age + interval + as.factor(sex70) + as.factor(edu) + comorbidity,data = data)
+  
+  base_data <- data
+  pred_base_z  <- predict(fit, newdata = base_data)
+  pred_base_ic <- z_to_raw_ic(pred_base_z, mu = mu_ic, sd = sd_ic)
+  
+  mean_base_z  <- mean(pred_base_z, na.rm = TRUE)
+  mean_base_ic <- mean(pred_base_ic, na.rm = TRUE)
+  
+  res_list <- vector("list", length(scenario_list))
+  nm <- names(scenario_list)
+  
+  for (i in seq_along(scenario_list)) {
+    vars_to_1 <- scenario_list[[i]]
+    scenario_name <- nm[i]
+    
+    newdata <- data
+    for (v in vars_to_1) {newdata[[v]] <- 1 }
+    
+    pred_z  <- predict(fit, newdata = newdata)
+    pred_ic <- z_to_raw_ic(pred_z, mu = mu_ic, sd = sd_ic)
+    
+    mean_z  <- mean(pred_z, na.rm = TRUE)
+    mean_ic <- mean(pred_ic, na.rm = TRUE)
+    
+    delta_ic_raw  <- mean_ic - mean_base_ic
+    pct_change_ic <- (delta_ic_raw / mean_base_ic) * 100
+    
+    res_list[[i]] <- data.frame(scenario = scenario_name, delta_ic_raw = delta_ic_raw, pct_change_ic = pct_change_ic, stringsAsFactors = F)}
+  
+  out <- do.call(rbind, res_list)
+  rownames(out) <- NULL
+  return(out)}
+
+##bootstrap 函数
+bootstrap_ci_scenarios <- function(data, mu_ic, sd_ic, scenario_list,B = 1000, seed = 123456) {
+  set.seed(seed)
+  n <- nrow(data)
+  scenario_names <- names(scenario_list)
+  n_scn <- length(scenario_names)
+  
+  boot_delta <- matrix(NA_real_, nrow = B, ncol = n_scn)
+  boot_pct   <- matrix(NA_real_, nrow = B, ncol = n_scn)
+  colnames(boot_delta) <- scenario_names
+  colnames(boot_pct)   <- scenario_names
+  
+  for (b in 1:B) {
+    idx <- sample(seq_len(n), size = n, replace = TRUE)
+    boot_data <- data[idx, , drop = FALSE]
+    
+    ## 为避免某些 bootstrap 样本因异常导致报错，这里用 try
+    tmp <- try(run_one_analysis(data = boot_data,mu_ic = mu_ic,sd_ic = sd_ic,scenario_list = scenario_list),silent = TRUE)
+    
+    if (!inherits(tmp, "try-error")) {
+      boot_delta[b, tmp$scenario] <- tmp$delta_ic_raw
+      boot_pct[b, tmp$scenario]   <- tmp$pct_change_ic} }
+  
+  ## 计算原始样本点估计
+  point_est <- run_one_analysis(data = data,mu_ic = mu_ic,sd_ic = sd_ic,scenario_list = scenario_list)
+  
+  ## 提取 percentile bootstrap CI
+  ci_res <- data.frame(
+    scenario = scenario_names,
+    delta_ic_raw = NA_real_,
+    delta_ic_raw_ci_lower = NA_real_,
+    delta_ic_raw_ci_upper = NA_real_,
+    pct_change_ic = NA_real_,
+    pct_change_ic_ci_lower = NA_real_,
+    pct_change_ic_ci_upper = NA_real_,
+    stringsAsFactors = FALSE )
+  
+  for (j in seq_along(scenario_names)) {
+    scn <- scenario_names[j]
+    
+    delta_vec <- boot_delta[, scn]
+    pct_vec   <- boot_pct[, scn]
+    
+    ci_res$delta_ic_raw[j] <- point_est$delta_ic_raw[point_est$scenario == scn]
+    ci_res$pct_change_ic[j] <- point_est$pct_change_ic[point_est$scenario == scn]
+    
+    ci_res$delta_ic_raw_ci_lower[j] <- quantile(delta_vec, probs = 0.025, na.rm = TRUE)
+    ci_res$delta_ic_raw_ci_upper[j] <- quantile(delta_vec, probs = 0.975, na.rm = TRUE)
+    
+    ci_res$pct_change_ic_ci_lower[j] <- quantile(pct_vec, probs = 0.025, na.rm = TRUE)
+    ci_res$pct_change_ic_ci_upper[j] <- quantile(pct_vec, probs = 0.975, na.rm = TRUE)}
+  return(ci_res)}
+
+result_ci <- bootstrap_ci_scenarios(data = life,mu_ic = mu_ic,sd_ic = sd_ic,scenario_list = scenario_list,B = 1000,seed = 123456)
+result_ci$delta_ic_raw_t <- paste0(sprintf("%.2f", result_ci$delta_ic_raw)," (",
+                                   sprintf("%.2f", result_ci$delta_ic_raw_ci_lower),", ",sprintf("%.2f", result_ci$delta_ic_raw_ci_upper),")")
+result_ci$pct_change_ic_t <- paste0(sprintf("%.2f", result_ci$pct_change_ic)," (",
+                                    sprintf("%.2f", result_ci$pct_change_ic_ci_lower),", ",sprintf("%.2f", result_ci$pct_change_ic_ci_upper),")")
+
+###############3.microbial diversity
+invsimp <- vegan::diversity(species_f_tss[species_f_tss$sample %in% life$sample,-1], index = "invsimpson")
+
+bci <- vegdist(species_f_tss[species_f_tss$sample %in% life$sample,-1], "bray")
+pcoa <- pcoa(bci)
+
+adnois_var <- c("lifestyle_e","bmi_e","smoke_e","alcohol_e","dash_e","activity_e")
+adonis_results <- lapply(adnois_var, function(y){
+  pcoa.new <- life %>% dplyr::select(sample, y) %>% left_join(species_f_tss) %>% drop_na()
+  pcoa.new[[y]] <- as.factor(pcoa.new[[y]])
+  bci.new <- pcoa.new %>% dplyr::select(all_of(colnames(species_f_tss[-1]))) %>% vegdist(., method = "bray")
+  form <- as.formula(paste("bci.new", y, sep="~")) 
+  z <- adonis2(form, data = pcoa.new, permutations=9999, parallel = 7)
+  return(z)   })
+
+#########4.Associations of healthy lifestyles with microbiota
+fit3 <- maaslin3(input_data = speciesdata,input_metadata = metadata,output = "fit3_output",
+                 formula = '~ lifestyle + age + interval + sex70  + edu + comorbidity + final_pair1',
+                 normalization = 'TSS',transform = 'LOG',
+                 augment = TRUE,standardize = F,
+                 max_significance = 0.2,
+                 median_comparison_abundance = TRUE,
+                 median_comparison_prevalence = FALSE,
+                 max_pngs = 50,cores = 1)
+
+########5.Associations of microbiota with IC
+######(1)菌相对丰度和IC的关联
+linear_regressions <- function(data) {
+  exposures  <- c(species_filtered)
+  outcomes   <- c("ic_z", "mmse_z", "sppb_z", "handgrip_z", "sensory_z", "gds_z")
+  covariates <- c("age_d70", "as.factor(sex70)","as.factor(edu)","bmi70","comorbidity70","final_pair1","lifestyle")
+  
+  results <- data.frame(exposure = character(), outcome = character(),beta = numeric(), ci_lower = numeric(), ci_upper = numeric(),
+                        p = numeric(), n_nonzero = integer(), n_total = integer(),stringsAsFactors = FALSE)
+  n_total_all <- nrow(data)
+  
+  for (pred in exposures) {
+    sub <- data[!is.na(data[[pred]]) & data[[pred]] != 0, , drop = FALSE]
+    n_nonzero <- nrow(sub)
+    for (out in outcomes) {
+      formula_str <- paste0(out, " ~ ", pred, " + ", paste(covariates, collapse = " + "))
+      if (n_nonzero < 10) {
+        results <- rbind(results,data.frame(exposure = pred, outcome = out, beta = NA, ci_lower = NA,
+                ci_upper = NA, p = NA, n_nonzero = n_nonzero, n_total = n_total_all,stringsAsFactors = FALSE))
+        next  }
+      model <- tryCatch(lm(as.formula(formula_str), data = sub), error = function(e) NULL)
+      if (is.null(model) || !(pred %in% rownames(summary(model)$coefficients))) {
+        results <- rbind(results, data.frame(exposure = pred, outcome = out, beta = NA, ci_lower = NA,
+                  ci_upper = NA, p = NA, n_nonzero = n_nonzero, n_total = n_total_all,stringsAsFactors = FALSE))
+        next }
+      coef_summary <- summary(model)$coefficients
+      beta   <- coef_summary[pred, "Estimate"]
+      p_val  <- coef_summary[pred, "Pr(>|t|)"]
+      ci     <- confint(model, level = 0.95)
+      
+      results <- rbind(results,data.frame(exposure = pred, outcome = out, beta = beta,ci_lower = ci[pred, 1], ci_upper = ci[pred, 2], 
+                 p = p_val,n_nonzero = n_nonzero, n_total = n_total_all,stringsAsFactors = FALSE))  } }
+  return(results)}
+
+linear_micro_ic_abun<-linear_regressions(life_species1)
+linear_micro_ic_abun$type<-"Abundance"
+
+####(2)菌prevalence和IC的关联
+linear_regressions <- function(data) {
+  exposures  <- c(species_filtered)
+  outcomes   <- c("ic_z", "mmse_z", "sppb_z", "handgrip_z", "sensory_z", "gds_z")
+  covariates <- c("age_d70", "as.factor(sex70)","as.factor(edu)","bmi70","comorbidity70","final_pair1","lifestyle")
+  
+  results <- data.frame(exposure = character(), outcome = character(),beta = numeric(), ci_lower = numeric(), ci_upper = numeric(),
+                        p = numeric(), n_nonzero = integer(), n_total = integer(),stringsAsFactors = FALSE)
+  n_total_all <- nrow(data)
+  for (pred in exposures) {
+    n_nonzero <- sum(data[[pred]] != 0 & !is.na(data[[pred]]))
+    for (out in outcomes) {
+      formula_str <- paste0(out, " ~ ", pred, " + ", paste(covariates, collapse = " + "))
+      model <- lm(as.formula(formula_str), data = data)
+      coef_summary <- summary(model)$coefficients
+      if (pred %in% rownames(coef_summary)) {
+        beta     <- coef_summary[pred, "Estimate"]
+        p_val    <- coef_summary[pred, "Pr(>|t|)"]
+        ci       <- confint(model, level = 0.95)
+        ci_lower <- ci[pred, 1]
+        ci_upper <- ci[pred, 2]
+        
+        results <- rbind(results,data.frame(exposure = pred, outcome = out, beta = beta,ci_lower = ci_lower, ci_upper = ci_upper, 
+                p = p_val,n_nonzero = n_nonzero, n_total = n_total_all,stringsAsFactors = FALSE)) } } }
+  return(results)}
+
+linear_micro_ic_prev<-linear_regressions(life_species2)
+linear_micro_ic_prev$type<-"Prevalence"
+
+#######FDR校正P值
+linear_micro_ic<-rbind(linear_micro_ic_abun,linear_micro_ic_prev)
+linear_micro_ic$p_fdr<-p.adjust(linear_micro_ic$p,method = "fdr")
+
+########6.pathway enrichment
+kodata <- life_ko[,ko_filtered]
+rownames(kodata) <- rownames(life_ko)
+all(rownames(kodata) == rownames(metadata))
+kodata_t <- t(kodata)
+
+ko_pvalue <- ko.test(kodata_t, "ic_z", metadata, method = "spearman",p.adjust.method1 = "none")
+ko_pvalue$p.value <- ko_ic$q_joint[match(ko_pvalue$KO_id, ko_ic$exposure)] 
+ko_pvalue <-ko_pvalue %>% dplyr::select(-p.adjust)
+ko_stat <- pvalue2zs(ko_pvalue, mode = c("directed", "mixed")[1], p.adjust.method1 = "none")
+
+q_cut <- 0.20
+ko_stat$Significantly <- ifelse(is.na(ko_stat$origin_p.value) | ko_stat$origin_p.value >= q_cut,"None", ko_stat$type)
+
+reporter_s2   <- get_reporter_score(ko_stat, perm = 9999, type = c("pathway", "module")[2],feature = "ko", p.adjust.method2 = "BH")
+reporter_res2 <- combine_rs_res(kodata_t, "ic_z", metadata, ko_stat, reporter_s2)
+
+#########7.DMM clustering
+clu_list<-union(ic,lifestyle)
+species_abs<-species_abs[rownames(species_abs) %in% life$sample,clu_list]
+set.seed(123456)
+mc <- getOption("mc.cores", 7)
+
+fit <- mclapply(1:10, dmn, count = as.matrix(species_abs), verbose = TRUE, seed =123456)
+best_fit <- fit[[4]]
+
+########8.mediation analysis
+#####(1)abundance
+run_mediation_df <- function(data, outcomes, exposure,cvar = c("age","interval","sex70","edu","comorbidity","final_pair1"),
+                             med, sims = 1000, boot = TRUE, boot.ci.type = "bca",treat.value = 1, control.value = 0, seed = 123456) {
+  results <- data.frame()
+  cov_str <- paste(cvar, collapse = " + ")
+  for (y in outcomes) {
+    for (m in med) {
+      row_out <- tryCatch({
+        model_m <- eval(bquote( lm(.(as.formula(paste0(m, " ~ ", exposure, " + ", cov_str))), data = data) ))
+        model_y <- eval(bquote( lm(.(as.formula(paste0(y, " ~ ", exposure, " + ", m, " + ", cov_str))), data = data)  ))
+        set.seed(seed)
+        mo <- mediation::mediate(model_m, model_y,treat = exposure, mediator = m,
+                                 treat.value = treat.value, control.value = control.value,
+                                 boot = boot, boot.ci.type = boot.ci.type, sims = sims)
+        data.frame(
+          exposure = exposure, mediator = m, outcome = y,
+          acme = mo$d.avg, acme_lower = mo$d.avg.ci[1], acme_upper = mo$d.avg.ci[2], acme_p = mo$d.avg.p,
+          ade  = mo$z.avg, ade_lower  = mo$z.avg.ci[1], ade_upper  = mo$z.avg.ci[2], ade_p  = mo$z.avg.p,
+          total = mo$tau.coef, total_lower = mo$tau.ci[1], total_upper = mo$tau.ci[2], total_p = mo$tau.p,
+          mediation_prop = mo$n.avg * 100,
+          ci_lower = mo$n.avg.ci[1] * 100, ci_upper = mo$n.avg.ci[2] * 100, p = mo$n.avg.p,
+          stringsAsFactors = FALSE)  }, error = function(e) {
+            message(sprintf("失败: mediator=%s, outcome=%s | 错误: %s", m, y, conditionMessage(e)))
+            data.frame(exposure = exposure, mediator = m, outcome = y,
+                       acme = NA_real_, acme_lower = NA_real_, acme_upper = NA_real_, acme_p = NA_real_,
+                       ade = NA_real_, ade_lower = NA_real_, ade_upper = NA_real_, ade_p = NA_real_,
+                       total = NA_real_, total_lower = NA_real_, total_upper = NA_real_, total_p = NA_real_,
+                       mediation_prop = NA_real_, ci_lower = NA_real_, ci_upper = NA_real_, p = NA_real_,
+                       stringsAsFactors = FALSE)    })
+      results <- rbind(results, row_out)   } }
+  return(results)}
+
+med_abundance <- run_mediation_df(data = life_med_a,outcomes = "ic_z",exposure = "lifestyle",med = m_a,sims = 1000, boot = TRUE,
+                                  cvar = c("age","interval","sex70","edu","comorbidity","final_pair1"))
+med_abundance$type <- "abundance"
+
+###############(2)prevalence
+run_mediation_df_bin <- function(data, outcomes, exposure,cvar = c("age","interval","sex70","edu","comorbidity","final_pair1"),
+                                 med, sims = 1000, boot = TRUE, boot.ci.type = "bca",treat.value = 1, control.value = 0, seed = 123456) {
+  results <- data.frame()
+  cov_str <- paste(cvar, collapse = " + ")
+  for (y in outcomes) {
+    for (m in med) {
+      row_out <- tryCatch({
+        model_m <- eval(bquote(glm(.(as.formula(paste0(m, " ~ ", exposure, " + ", cov_str))),
+                                   data = data, family = binomial(link = "logit"))))
+        model_y <- eval(bquote(lm(.(as.formula(paste0(y, " ~ ", exposure, " + ", m, " + ", cov_str))), data = data)))
+        set.seed(seed)
+        mo <- mediation::mediate(model_m, model_y,treat = exposure, mediator = m,treat.value = treat.value, control.value = control.value,
+                                 boot = boot, boot.ci.type = boot.ci.type, sims = sims)
+        data.frame(
+          exposure = exposure, mediator = m, outcome = y,
+          acme = mo$d.avg, acme_lower = mo$d.avg.ci[1], acme_upper = mo$d.avg.ci[2], acme_p = mo$d.avg.p,
+          ade  = mo$z.avg, ade_lower  = mo$z.avg.ci[1], ade_upper  = mo$z.avg.ci[2], ade_p  = mo$z.avg.p,
+          total = mo$tau.coef, total_lower = mo$tau.ci[1], total_upper = mo$tau.ci[2], total_p = mo$tau.p,
+          mediation_prop = mo$n.avg * 100,
+          ci_lower = mo$n.avg.ci[1] * 100, ci_upper = mo$n.avg.ci[2] * 100, p = mo$n.avg.p,
+          stringsAsFactors = FALSE)  }, error = function(e) {
+            message(sprintf("失败: mediator=%s, outcome=%s | 错误: %s", m, y, conditionMessage(e)))
+            data.frame(exposure = exposure, mediator = m, outcome = y,
+                       acme = NA_real_, acme_lower = NA_real_, acme_upper = NA_real_, acme_p = NA_real_,
+                       ade = NA_real_, ade_lower = NA_real_, ade_upper = NA_real_, ade_p = NA_real_,
+                       total = NA_real_, total_lower = NA_real_, total_upper = NA_real_, total_p = NA_real_,
+                       mediation_prop = NA_real_, ci_lower = NA_real_, ci_upper = NA_real_, p = NA_real_,
+                       stringsAsFactors = FALSE) })
+      results <- rbind(results, row_out) } }
+  return(results)}
+
+med_prevalence <- run_mediation_df_bin(data = life_med_p,outcomes = "ic_z",exposure = "lifestyle",,med = m_p,sims = 1000, boot = TRUE,
+                                       cvar = c("age","interval","sex70","edu","comorbidity","final_pair1"))
+med_prevalence$type <- "prevalence"
+
