@@ -178,8 +178,6 @@ bootstrap_ci_scenarios <- function(data, mu_ic, sd_ic, scenario_list,B = 1000, s
   for (b in 1:B) {
     idx <- sample(seq_len(n), size = n, replace = TRUE)
     boot_data <- data[idx, , drop = FALSE]
-    
-    ## 为避免某些 bootstrap 样本因异常导致报错，这里用 try
     tmp <- try(run_one_analysis(data = boot_data,mu_ic = mu_ic,sd_ic = sd_ic,scenario_list = scenario_list),silent = TRUE)
     
     if (!inherits(tmp, "try-error")) {
