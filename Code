@@ -1,0 +1,21 @@
+#######Associations between midlife healthy lifestyles and later-life IC
+linear_models <- function(outcomes, data, exposure = "lifestyle") {
+  results <- lapply(outcomes, function(outcome) {
+    formula <- as.formula(paste0(outcome, " ~ ", exposure,
+                                 " + age + interval + as.factor(sex70) + as.factor(edu) + comorbidity"))
+    
+    model <- lm(formula, data = data)
+    coef_summary <- summary(model)$coefficients
+    ci <- confint(model) 
+    beta <- coef_summary[exposure, "Estimate"]
+    p_val <- coef_summary[exposure, "Pr(>|t|)"]
+    beta_l <- ci[exposure, 1]
+    beta_u <- ci[exposure, 2]
+    
+    data.frame(outcome = outcome,exposure = exposure,
+               beta = beta,beta_l = beta_l,beta_u = beta_u, p = p_val,
+               stringsAsFactors = FALSE)})
+  do.call(rbind, results) }
+
+outcomes <- c("mmse_z","sppb_z", "handgrip_z", "sensory_z","gds_z", "ic_z")
+linear_lifestyle_ic <- linear_models(outcomes, life, exposure = "lifestyle")
